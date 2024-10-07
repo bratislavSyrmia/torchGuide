@@ -35,9 +35,9 @@
 <body>
 
 <h1>MLIR za početnike</h1>
-<p><strong>Autor:</strong> Bratislav Filipović</p>
+<p><strong>Autor:</strong>Bratislav Filipović</p>
+<p>Pre čitanja ovog dokumenta, treba se upoznati sa klasičnim LLVM-om i preći tutorijal za Toy dijalekat</p>
 <p><a href="https://mlir.llvm.org/docs/Tutorials/Toy" target="_blank">https://mlir.llvm.org/docs/Tutorials/Toy</a></p>
-
 <h2>Šta je MLIR</h2>
 <p>«Medjureprezentacija na više nivoa»</p>
 <p>Omogućava da odradimo neke optimizacije na međujeziku.</p>
@@ -48,8 +48,9 @@
 <p>Torch je python biblioteka za razvijanje modela mašinskog učenja. Pajton je jezik koji se ne kompajlira, nego se interpretira. Da bi se pajton kod interpretirao, potrebno je da imamo
 pajton interpreter koji u trenutku pokretanja koda tumači instrukcije i izvršava ih. S druge strane, cilj torch mlira je da taj kod prevede u međujezik, i to prvo u 
 torch dijalekat MLIR-a a zatim da iz torch i ATEN (aten je biblioteka u torču za rad s tenzorima) dijalekta prebaci u niže dijalekte kao što su
-Linalg (postoji linalg biblioteka u torch-u i linalg dijalekat, to su dve razlicite stvari), SCF, Arith, Math i Tensor. Dokumentacija svih ovih dijalekata dostupna je na mlirovom sajtu. Jednom kada kod prebacimo iz pajtona u međureprezentaciju, možemo ga optimizovati i
-prebaciti u mašinski kod za ciljanu arhitekturu, što nam omogućava da program pisan u pzTorch-u pokrenemo na primer na nekom čipu koji nema podržan pajton interpreter.
+Linalg (postoji linalg biblioteka u torch-u i linalg dijalekat, to su dve razlicite stvari), SCF, Arith, Math i Tensor. Spuštanje može biti višeslojno,
+što znači da u nekom trenutku možemo imati kod koji sadrži nekoliko dijalekata istovremeno. Dokumentacija svih ovih dijalekata dostupna je na mlirovom sajtu. Jednom kada kod prebacimo iz pajtona u međureprezentaciju, možemo ga optimizovati i
+prebaciti u mašinski kod za ciljanu arhitekturu, što nam omogućava da program pisan u pyTorch-u pokrenemo na primer na nekom čipu koji nema podržan pajton interpreter.
 Trenutno proces spuštanja još nije usavršen i često operator koji spustimo na niže dijalekte nećemo spuštati skroz na LLVM nego na dijalekte koji su gore pomenuti, 
 a zatim možemo koristiti IREE da tako dobijen međukod pokrenemo i vidimo da li radi to što smo zamislili. Rad sa IREE će biti opisan dole</p>
 <hr>
@@ -169,10 +170,22 @@ lib/Conversion/TorchToLinalg je folder u kojem se nalaze cpp fajlovi gde su razn
 fajlovima su definisana pojedinačna spuštanja. Korisno je pogledati metodu getDependentDialects. Ona nam govori koje još dijalekte možemo koristiti kad spuštamo operator na linalg dijalekat. Još jedan <b>koristan fajl je Utils.cpp koji nam daje pomoćne funkcije za kreiranje linalg.generic </b>. Ukoliko radimo spuštanje bilo bi dobro da dobro razumemo ovu operaciju. Postoji objašnjenje na mlirovom sajtu a 
 dole će biti još jedan link sa pojednostavljenim objašnjenjem i primerom.
 Spuštanja možemo pogledati u fajlu kao što je na primer Linear.cpp. Obrati pažnju da se ne nasleđuju isti klase kao kod dekompozicije, jedno je OpRewritePattern za dekompoziciju a OpConversionPattern.
-Takođe u dekompoziciji, iz neke torč operacije možemo dohvatiti operand sa na primer <code>auto self op.getSelf();</code> 
+Takođe u dekompoziciji, iz neke torč operacije možemo dohvatiti operand sa na primer <code>auto self = op.getSelf();</code> 
 Ako taj operand želimo da koristimo da napravimo linalg operaciju zahvatićemo ga sa adaptor.getSelf(). Adaptor je pomoćna klasa koja nam omogućava da tenzore iz torča koristimo za kreiranje linalg operacija. Na žalost ne možemo tek tako da kastujemo između torč tenzora i tenzora koje linalg koristi (na primer RankedTensorType).
 Iz toga sledi da ne možemo da kombinujemo spuštanje i dekompoziciju, na primer ne možemo napraviti linalg.generic operaciju i unutar nje imati torch.flatten operaciju.
 Dakle, u DecomposeComplexOps.cpp imamo samo dekompoziciju na druge torč operatore. 
+</p>
+<h3>:</h3>
+<p>
+Bitno je znati razliku između tenzora i bafera. Tenzor je apstraktniji pojam i još uvek nije odlučeno kako će on biti predstavljen u memoriji.
+Baferizacija je prolaz koji zapravo mapira ove akstraktne tenzore u konkretno smeštanje u memoriji. 
+https://mlir.llvm.org/docs/Bufferization/
+</p>
+<h3>Baferizacija:</h3>
+<p>
+Bitno je znati razliku između tenzora i bafera. Tenzor je apstraktniji pojam i još uvek nije odlučeno kako će on biti predstavljen u memoriji.
+Baferizacija je prolaz koji zapravo mapira ove akstraktne tenzore u konkretno smeštanje u memoriji. 
+https://mlir.llvm.org/docs/Bufferization/
 </p>
 <hr>
 
@@ -191,7 +204,7 @@ Dakle, u DecomposeComplexOps.cpp imamo samo dekompoziciju na druge torč operato
 Jedan prolaz može biti pozvan više puta. Nekada prolaze možemo grupisati u pajp, kada nam je bitno kojim redosledom će se izvršavati.
 Na primer, do sada smo se sreli sa komandom <code>torch-mlir-opt -pass-pipeline='builtin.module(torch-backend-to-linalg-on-tensors-backend-pipeline)' ...</code>.
 Ako odemo u vscode i u pretragu ukucamo "torch-backend-to-linalg-on-tensors-backend-pipeline" odvešće nas u passes.cpp u kojoj je metod 
-TorchConversion::createTorchBackendToLinalgOnTensorsBackendPipeline); a u njegovoj definiciji vidimo linije kao što su 
+TorchConversion::createTorchBackendToLinalgOnTensorsBackendPipeline a u njegovoj definiciji vidimo linije kao što su 
 <code>pm.addNestedPass<func::FuncOp>(Torch::createFuseQuantizedOpsPass);</code> i slične, koje nam govore koji zapravo prolazi se pozivaju da bismo od torč bekenda dobili linalg
 </p>
 
@@ -203,7 +216,18 @@ TorchConversion::createTorchBackendToLinalgOnTensorsBackendPipeline); a u njegov
 <h3>Fi (Phi) funkcije</h3>
 <p>Nekada imamo slučajeve gde neka promenljiva može imati različitu vrednost u zavisnosti od toga kojim putem smo došli do instrukcije. Na primer, u if bloku joj se dodeljuje jedna vrednost
 u else bloku druga. Pošto SSA forma podržava samo jednu dodelu po promenljiuvoj, uvode se phi instrukcije koje promenljivoj dodeljuju različitu vrednost u zavisnosti iz kog basic block-a 
-smo došli u trenutni blok. Na primer:</p>
+smo došli u trenutni blok. Mlir je izmenio ovo tako što je napravio da svaki osnovni (bazični) blok (BB) prima argumente od bloka koji
+mu prethodi. Na primer ovo je telo while petlje koje prima dva argumenta od spolja arg4 i arg5, a na svom kraju svom nasledniku prosledjuje
+%14 i %15 kroz yield operaciju:</p>
+<pre><code>
+  do {
+        ^bb0(%arg4: i32, %arg5: i32):
+          %14 = arith.divui %arg4, %c2_i32 : i32
+          %15 = arith.addi %arg5, %c1_i32 : i32
+          scf.yield %14, %15 : i32, i32
+        }
+</code></pre>
+
 
 
 <h3>Intrinzici:</h3>
