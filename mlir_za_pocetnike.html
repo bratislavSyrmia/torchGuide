@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<html lang="sr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MLIR za početnike</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            line-height: 1.6;
+            margin: 20px;
+            color: #333;
+        }
+        h1, h2, h3 {
+            color: #0056b3;
+        }
+        p {
+            margin-bottom: 10px;
+        }
+        pre {
+            background-color: #f8f8f8;
+            border: 1px solid #ddd;
+            padding: 10px;
+            overflow-x: auto;
+            margin-bottom: 20px;
+        }
+        code {
+            font-family: Consolas, "Courier New", monospace;
+            background-color: #f8f8f8;
+            padding: 2px 4px;
+            border-radius: 3px;
+        }
+    </style>
+</head>
+<body>
+
+<h1>MLIR za početnike</h1>
+<p><strong>Autor:</strong> Bratislav Filipović</p>
+<p><a href="https://mlir.llvm.org/docs/Tutorials/Toy" target="_blank">https://mlir.llvm.org/docs/Tutorials/Toy</a></p>
+
+<h2>Šta je MLIR</h2>
+<p>«Medjureprezentacija na više nivoa»</p>
+<p>Omogućava da odradimo neke optimizacije na međujeziku.</p>
+<p>Međujezik može imati dijalekat koji je specifičan za neku arhitekturu, što nam omogućava da odradimo još neke specifične optimizacije. Dijalekat je definisan tipovima i operacijama koje podržava</p>
+<p>U MLIR-u je LLVM međujezik predstavljen kao «LLVM dijalekt». LLVM dijalekat ima jedan-jedan preslikavanje u klasičnu LLVM međureprezentaciju.</p>
+
+<h2>Čemu sluzi torch-mlir?</h2>
+<p>Torch je python biblioteka za razvijanje modela mašinskog učenja. Pajton je jezik koji se ne kompajlira, nego se interpretira. Da bi se pajton kod interpretirao, potrebno je da imamo
+pajton interpreter koji u trenutku pokretanja koda tumači instrukcije i izvršava ih. S druge strane, cilj torch mlira je da taj kod prevede u međujezik, i to prvo u 
+torch dijalekat MLIR-a a zatim da iz torch i ATEN (aten je biblioteka u torču za rad s tenzorima) dijalekta prebaci u niže dijalekte kao što su
+Linalg (postoji linalg biblioteka u torch-u i linalg dijalekat, to su dve razlicite stvari), SCF, Arith, Math i Tensor. Dokumentacija svih ovih dijalekata dostupna je na mlirovom sajtu. Jednom kada kod prebacimo iz pajtona u međureprezentaciju, možemo ga optimizovati i
+prebaciti u mašinski kod za ciljanu arhitekturu, što nam omogućava da program pisan u pzTorch-u pokrenemo na primer na nekom čipu koji nema podržan pajton interpreter.
+Trenutno proces spuštanja još nije usavršen i često operator koji spustimo na niže dijalekte nećemo spuštati skroz na LLVM nego na dijalekte koji su gore pomenuti, 
+a zatim možemo koristiti IREE da tako dobijen međukod pokrenemo i vidimo da li radi to što smo zamislili. Rad sa IREE će biti opisan dole</p>
+<hr>
+
+<h2>Bildovanje</h2>
+<p>MLIR je deo LLVM projekta.</p>
+<p>Bilduje se kao što bismo bildovali LLVM, samo što kada generišemo make fajlove dodamo opciju da će se pored LLVM bildovati i MLIR, na primer:</p>
+<pre><code>cmake -G Ninja ../llvm \
+  -DLLVM_ENABLE_PROJECTS="mlir" \  // ovo govori da bilduje i mlir kada bilda llvm
+  -DLLVM_TARGETS_TO_BUILD="host" \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DLLVM_ENABLE_ASSERTIONS=ON
+</code></pre>
+
+<h3>Bitno!</h3>
+<p>Dodatni flegovi:</p>
+<p>Da bi VSCode mogao da pronađe sve <code>#include</code> fajlove, potrebno je da mu dostavimo <code>compile_commands.json</code> fajl.</p>
+<p>To radimo tako što cmake-u prosledimo fleg:</p>
+<pre><code>-DCMAKE_EXPORT_COMPILE_COMMANDS=ON</code></pre>
+<p>Ovo će cmake-u reći da u build folderu izgeneriše <code>compile_commands.json</code> fajl. Bez tog fajla VSCode će neke <code>#include</code> naredbe podvlačiti crveno (reći će da ne može da nađe heder fajl npr).</p>
+<p>Ako smo bildovali projekat bez ovoga, nema potrebe da se rebilduje ceo, dovoljno je ponovo pokrenuti cmake komandu, samo dodati ovaj fleg.</p>
+<p>Posle je potrebno VSCode-u reći gde se nalazi taj fajl:</p>
+<pre><code>ctrl+shift+p => c/c++ edit configurations (GUI) => skrol dole u advanced settings => u opciji Compile commands dodati => .../torch-mlir/build/compile_commands.json</code></pre>
+
+<p>Ako želimo da pratimo tutorijal sa primerima, prosledićemo flegove:</p>
+<pre><code>-DLLVM_INCLUDE_EXAMPLES=ON
+-DLLVM_BUILD_EXAMPLES=ON
+</code></pre>
+<p>Ovi flegovi govore da se i pokazni primeri izbilduju.</p>
+<p>Ako je projekat već izbildovan, dovoljno je ponovo pokrenuti cmake sa ovim dodatim flegom (i svim flegovima iz prethodnog pokretanja) i zatim pokrenuti ninja iz build foldera.</p>
+
+<p>Za projekte kao što je torch-mlir, LLVM projekat je submodul tog repozitorijuma, i nalazi se u <code>${torch-mlir-direktorijum}/externals/llvm-project</code> // tu se nalaze i torch i mlir.</p>
+
+<p>MLIR fajlovi se nalaze u npr:</p>
+<pre><code>~/torch-mlir/externals/llvm-project/mlir</code></pre>
+<p>Unutar toga, .cpp fajlovi su u <code>/lib</code> folderu, hederi su u <code>/inc</code> folderu.</p>
+
+<p>Kada su LLVM i MLIR bildovani, izvršni fajlovi kao što su <code>mlir-opt</code>, <code>mlir-tblgen</code>, <code>llc</code>, itd., nalaze se u:</p>
+<pre><code>${torch-mlir-direktorijum}/build/bin</code></pre>
+
+<hr>
+
+<h2>Transformacije</h2>
+<h3>Kanonicka forma:</h3>
+<p><a href="https://sunfishcode.github.io/blog/2018/10/22/Canonicalization.html" target="_blank">https://sunfishcode.github.io/blog/2018/10/22/Canonicalization.html</a></p>
+
+<h3>Dekompozicija:</h3>
+<p>
+Ovo je lakši i jednostavniji način da implementiramo operator i objašnjen je u drugom uputstvu. Ovo je dopuna uz taj dokument koja može da razjasni neke nedoumice.
+Ako neki torč operator koji nije implementiran u torč mliru želimo možemo da razložimo na operatore koji su već implementirani, uradićemo to u fajlu lib/Dialect/Torch/Transforms/DecomposeComplexOps.cpp
+Ukoliko nismo sigurni kako se neki torč operator zove unutar mlir koda, možemo to saznati na sledeći način:
+Na primer, želimo da znamo kojem operatoru odgovara operacija uzimanja elementa na određenom indeksu, na primer <code>a=x[0][4]</code> želimo da znamo kako ovu operaciju da ugradimo u naš kod
+pomoću rewriter.create<NazivKlaseOperacije>(...)
+Napisaćemo početni kod:
+</p>
+<pre><code>
+import torch
+from torch_mlir import torchscript
+from torch_mlir_e2e_test.annotations import annotate_args, export
+
+
+class SimpleModule(torch.nn.Module):
+
+    def __init__(self):
+        super().__init__()
+
+    def forward(self, x):
+        return x[0][4]
+
+
+
+if __name__ == '__main__':
+    test_input = torch.rand(4, 4)
+    graph = SimpleModule()
+    graph.eval()
+    module = torchscript.compile(graph,
+                                 test_input, 
+                                 torchscript.OutputType.RAW, # Output dialect
+                                 use_tracing=False,
+                                 verbose=False)
+    print(module.operation.get_asm())
+</code></pre>
+
+prevešćemo ga u torčskript (ne zaboravite da aktivirate python virtuelno okruženje pre pokretanja) pomoću:
+<code>python 1.py | tee 2.mlir</code>
+dobićemo:
+<pre><code>
+module attributes {torch.debug_module_name = "SimpleModule"} {
+  func.func private @__torch__.SimpleModule.forward(%arg0: !torch.nn.Module<"__torch__.SimpleModule">, %arg1: !torch.tensor {torch.type_bound = !torch.vtensor<[4,4],f32>}) -> !torch.tensor {
+    %int0 = torch.constant.int 0
+    %int4 = torch.constant.int 4
+    %1 = torch.aten.select.int %arg1, %int0, %int0 : !torch.tensor, !torch.int, !torch.int -> !torch.tensor
+    %2 = torch.aten.select.int %1, %int0, %int4 : !torch.tensor, !torch.int, !torch.int -> !torch.tensor
+    return %2 : !torch.tensor
+  }
+  torch.class_type @__torch__.SimpleModule {
+    torch.attr private "training" : !torch.bool
+    torch.attr private "_is_full_backward_hook" : !torch.optional<bool>
+    torch.method "forward", @__torch__.SimpleModule.forward
+  }
+  %false = torch.constant.bool false
+  %none = torch.constant.none
+  %0 = torch.nn_module {
+    torch.slot "training", %false : !torch.bool
+    torch.slot "_is_full_backward_hook", %none : !torch.none
+  } : !torch.nn.Module<"__torch__.SimpleModule">
+}
+</code></pre>
+Dakle, potreban nam je <code>Torch::AtenSelectIntOp</code> Dalje možemo u VSCode da pretražimo projekat i nađemo kako da ga ubacimo.
+
+
+
+<h3>Spuštanje (lowering):</h3>
+<p>
+Ako naš operator ne može da se razloži, moramo ga spustiti na niže dijalekte. Da bismo bolje razumeli spuštanje možemo da pogledamo fajlove za spuštanje torča na linalg:
+lib/Conversion/TorchToLinalg je folder u kojem se nalaze cpp fajlovi gde su razna spuštanja. Prvo ćemo pogledati TorchToLinalg.cpp. To je fajl u kojem se definiše sam prolaz, u ostalim 
+fajlovima su definisana pojedinačna spuštanja. Korisno je pogledati metodu getDependentDialects. Ona nam govori koje još dijalekte možemo koristiti kad spuštamo operator na linalg dijalekat. Još jedan <b>koristan fajl je Utils.cpp koji nam daje pomoćne funkcije za kreiranje linalg.generic </b>. Ukoliko radimo spuštanje bilo bi dobro da dobro razumemo ovu operaciju. Postoji objašnjenje na mlirovom sajtu a 
+dole će biti još jedan link sa pojednostavljenim objašnjenjem i primerom.
+Spuštanja možemo pogledati u fajlu kao što je na primer Linear.cpp. Obrati pažnju da se ne nasleđuju isti klase kao kod dekompozicije, jedno je OpRewritePattern za dekompoziciju a OpConversionPattern.
+Takođe u dekompoziciji, iz neke torč operacije možemo dohvatiti operand sa na primer <code>auto self op.getSelf();</code> 
+Ako taj operand želimo da koristimo da napravimo linalg operaciju zahvatićemo ga sa adaptor.getSelf(). Adaptor je pomoćna klasa koja nam omogućava da tenzore iz torča koristimo za kreiranje linalg operacija. Na žalost ne možemo tek tako da kastujemo između torč tenzora i tenzora koje linalg koristi (na primer RankedTensorType).
+Iz toga sledi da ne možemo da kombinujemo spuštanje i dekompoziciju, na primer ne možemo napraviti linalg.generic operaciju i unutar nje imati torch.flatten operaciju.
+Dakle, u DecomposeComplexOps.cpp imamo samo dekompoziciju na druge torč operatore. 
+</p>
+<hr>
+
+<h2>Tablegen</h2>
+<p><code>tablegen</code> alat služi da od <code>.td</code> fajlova izgeneriše <code>.cpp</code> fajlove koji sadrže klase koje smo tamo definisali. Nekada je jednostavnije raditi sa <code>tablegen</code> deklaracijama nego praviti C++ šablone i kucati isti kod više puta.</p>
+<p>Za MLIR, izvršna datoteka <code>tablegen</code> nalazi se u odgovarajućem direktorijumu.</p>
+
+<p>Takođe, u <code>tblgen</code>-u možemo definisati <code>Pattern</code> klase koje mogu da prepoznaju određeni obrazac i ako je transformacija jednostavna, da ga zamene nečim drugim, a ako je transformacija komplikovanija, može da pozove C++ kod kojem će proslediti hook ka prepoznatom obrascu, pa onda tamo vršiti transformacije.</p>
+
+<hr>
+
+<h2>Korisni pojmovi</h2>
+
+<h3>Prolazi (Passes):</h3>
+<p>Vrše transformacije koda, analiziraju ga ili proveravaju da li je kod legalan (verifikacija). Postoje prolazi koji se pozivaju na nivou modula, funkcije, petlje itd.
+Jedan prolaz može biti pozvan više puta. Nekada prolaze možemo grupisati u pajp, kada nam je bitno kojim redosledom će se izvršavati.
+Na primer, do sada smo se sreli sa komandom <code>torch-mlir-opt -pass-pipeline='builtin.module(torch-backend-to-linalg-on-tensors-backend-pipeline)' ...</code>.
+Ako odemo u vscode i u pretragu ukucamo "torch-backend-to-linalg-on-tensors-backend-pipeline" odvešće nas u passes.cpp u kojoj je metod 
+TorchConversion::createTorchBackendToLinalgOnTensorsBackendPipeline); a u njegovoj definiciji vidimo linije kao što su 
+<code>pm.addNestedPass<func::FuncOp>(Torch::createFuseQuantizedOpsPass);</code> i slične, koje nam govore koji zapravo prolazi se pozivaju da bismo od torč bekenda dobili linalg
+</p>
+
+<h3>SSA forma</h3>
+<p>SSA (Static Single Assignment) forma je međureprezentacija koja se koristi u kompajlerima, uključujući LLVM, gde je svakoj promenljivoj dodeljena tačno jedna vrednost. U SSA formi, promenljive su nepromenljive, što znači da jednom kada je vrednost dodeljena promenljivoj, ta vrednost se ne može menjati. Ako promenljiva treba da se ažurira, kreira se nova verzija te promenljive.</p>
+<p>Ova forma pojednostavljuje optimizacije jer je svaka promenljiva jedinstvena i definisana samo na jednom mestu, što olakšava kompajleru da prati korišćenje promenljivih i njihove zavisnosti. SSA takođe uvodi phi funkcije koje rešavaju problem promenljivih koje imaju različite vrednosti u zavisnosti od toka kontrole, kao što je slučaj sa grananjem uslova.</p>
+<p>U suštini, SSA pomaže u poboljšanju efikasnosti kompajlerskih optimizacija pružajući jasnu i jednostavnu reprezentaciju načina na koji se promenljive koriste kroz kod.</p>
+
+<h3>Fi (Phi) funkcije</h3>
+<p>Nekada imamo slučajeve gde neka promenljiva može imati različitu vrednost u zavisnosti od toga kojim putem smo došli do instrukcije. Na primer, u if bloku joj se dodeljuje jedna vrednost
+u else bloku druga. Pošto SSA forma podržava samo jednu dodelu po promenljiuvoj, uvode se phi instrukcije koje promenljivoj dodeljuju različitu vrednost u zavisnosti iz kog basic block-a 
+smo došli u trenutni blok. Na primer:</p>
+
+
+<h3>Intrinzici:</h3>
+<p>«LLVM intrinsics» su specijalne funkcije koje pruža LLVM kompajler infrastruktura, koje predstavljaju operacije koje nisu direktno podržane standardnim bibliotekama jezika ili mašinskim instrukcijama. Često odgovaraju niskonivouskim operacijama, kao što su hardverski specifične instrukcije (npr. atomske operacije, vektorske operacije) ili pozivi runtime biblioteke (npr. upravljanje memorijom). Ovi intrinzici se koriste unutar LLVM Intermediate Representation (IR) da bi omogućili optimizacije i generisanje koda koji su usko povezani sa ciljanom arhitekturom ili specifičnim ciljevima optimizacije. Za razliku od regularnih funkcija, intrinzici imaju dobro definisano ponašanje koje LLVM optimizator može koristiti za efikasnije transformacije.</p>
+
+<h3>Tenzori:</h3>
+<p>«Tenzor» je kao vektor ili matrica, samo na višem nivou apstrakcije. To znači da ako imamo na primer tenzor <code>float32[2][4]</code>, još uvek nije odlučeno kako će on zapravo biti reprezentovan u memoriji. Tek u daljoj obradi kompajler odlučuje hoće li ga pretvoriti u vektor, hoće li ga alocirati u memoriji ili možda smestiti u specijalizovane vektorske registre, u zavisnosti od implementacije i arhitekture.</p>
+<p><code>
+; Pretpostavimo da imamo dva osnovna bloka koji se spajaju <br>
+%0 = phi i32 [ 1, %entry ], [ %x, %loop ]
+</code></p>
+
+<p>A tensor is a multi-dimensional array that generalizes the concepts of scalars, vectors, and matrices to higher dimensions. In simple terms, a tensor can represent data in various dimensions: a scalar is a 0D tensor, a vector is a 1D tensor, a matrix is a 2D tensor, and tensors can extend to even higher dimensions (3D, 4D, etc.). Tensors are widely used in machine learning and scientific computing to handle and manipulate complex data structures.</p>
+
+<h3>Value-typed classes:</h3>
+<p>«Value-typed» klase odnose se na klase u programiranju koje se ponašaju kao tipovi vrednosti, što znači da su male, lagane i često predstavljaju jednostavne, nepromenljive podatke. Za razliku od referentnih tipova, koji se obično manipulišu putem pokazivača ili referenci, objekti tipa vrednosti obično se kopiraju po vrednosti i nepromenljivi su nakon kreacije.</p>
+
+<hr>
+
+<h2>Terminal:</h2>
+<p><code>ctrl+R</code> za reverse search, omogućava nam da radimo pretragu među komandama koje smo prethodno pokrenuli: <code>ctrl+R</code> => ukucamo šta želimo i onda saltamo sa <code>ctrl+R</code></p>
+<p><code>ctrl+strelice levo/desno</code> pomera kursor za po jednu reč.</p>
+<p><code>ctrl+w</code> briše unazad do početka reči.</p>
+<p><code>ctrl+shift+c/v</code> za copy-paste.</p>
+
+<hr>
+<h2>Često postavljena pitanja</h2>
+<h3>Povukao sam najnovije izmene sa mejna i odjednom padaju testovi za nešto što nisam ja pisao</h3>
+<ul>Proverite da li je virtuelno okruženje ili konda aktivirano. </ul>
+<ul>pokrenite <code>git submodule update</code>. LLVM je eksterni modul u projektu što znači da mora ručno da se pokrene ova komanda da bi se verzija llvm-a uskladila s projektom. Nakon toga izbildujte projekat ponovo</ul>
+<ul>Pokrenite opet skriptu koja instalira python dependensije kao kad ste prvi put bildovali projekat
+<pre><code>python -m pip install -r requirements.txt
+python -m pip install -r torchvision-requirements.txt</code></pre></ul>
+
+<hr>
+
+<h2>Korisni linkovi:</h2>
+<b>Jako korisno!!!</b> Linalg, IREE i kako pokrenuti spusteni operator su takodje na ovom linku: https://gist.github.com/bjacob/2e662b3d2259d99aec15a43bf0e7b325
+Torch forum: https://discourse.llvm.org/c/projects-that-want-to-become-official-llvm-projects/torch-mlir/41
+Kul blog sa tekstovima o MLIR-u: https://www.lei.chat/tags/mlir/
+Kako bildovati torch-mlir: https://github.com/llvm/torch-mlir/blob/main/docs/development.md
+</body>
+</html>
+
